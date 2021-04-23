@@ -11,6 +11,7 @@ opts = Slop::Options.new
 opts.banner = "Usage: ./filtax.rb [options]"
 opts.array '-a', '--address', 'Wallet or miner address'
 opts.integer '-d', '--day', 'Number of recent days to skip due to slow processing of Filfox', default: 14
+opts.boolean '-c', '--cache', 'Use cache if possible', default: true
 opts.on '-h', '--help', 'print help' do
   puts opts
   exit
@@ -23,6 +24,7 @@ rescue
   exit
 end
 @day = @options[:day]
+@use_cache = @options[:cache]
 
 def get_price
   URI.open('https://www.coingecko.com/price_charts/export/12817/usd.csv', 'rb') do |url|
@@ -33,6 +35,7 @@ end
 def get_transactions(address)
   if File.exists?("#{address}.json")
     result = JSON.parse(File.read("#{address}.json"))
+    return result if @use_cache
   else 
     result = {}
   end
@@ -115,8 +118,8 @@ end
 summary.each do |key, transactions|
   CSV.open("#{key}.csv", "wb") do |csv|
     csv << ['Date', 'Description', 'Amount']
-    transactions.each do |t|
-      csv << t
+    transactions.group_by { |t| t[0..1].join('#') }.map{|dd, ts| [dd.split('#')[0], dd.split('#')[1], "%.2f" % [ts.reduce(0.0){|s, t| s += t[2]}]]}.each do |t|
+      csv << t if t[2] != '0.00' && t[2] != '-0.00'
     end
   end
 end
@@ -124,7 +127,7 @@ exception.each do |key, transactions|
   CSV.open("#{key}.exception.csv", "wb") do |csv|
     csv << ['Date', 'Description', 'Amount']
     transactions.each do |t|
-      csv << t
+      csv << [t[0], t[1], "%.2f" % [t[2]]]
     end
   end
 end
