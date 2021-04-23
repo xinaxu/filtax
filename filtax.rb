@@ -11,7 +11,7 @@ opts = Slop::Options.new
 opts.banner = "Usage: ./filtax.rb [options]"
 opts.array '-a', '--address', 'Wallet or miner address'
 opts.integer '-d', '--day', 'Number of recent days to skip due to slow processing of Filfox', default: 14
-opts.boolean '-c', '--cache', 'Use cache if possible', default: true
+opts.boolean '-u', '--update', 'Update cache', default: false
 opts.on '-h', '--help', 'print help' do
   puts opts
   exit
@@ -24,7 +24,7 @@ rescue
   exit
 end
 @day = @options[:day]
-@use_cache = @options[:cache]
+@update_cache = @options[:update]
 
 def get_price
   URI.open('https://www.coingecko.com/price_charts/export/12817/usd.csv', 'rb') do |url|
@@ -35,7 +35,7 @@ end
 def get_transactions(address)
   if File.exists?("#{address}.json")
     result = JSON.parse(File.read("#{address}.json"))
-    return result if @use_cache
+    return result unless @update_cache
   else 
     result = {}
   end
