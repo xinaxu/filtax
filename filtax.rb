@@ -1,151 +1,130 @@
 #!/usr/bin/ruby
+require 'date'
 require 'slop'
 require 'rest-client'
 require 'json'
 require 'set'
-require 'nokogiri'
 require 'open-uri'
+require 'csv'
 
 opts = Slop::Options.new
 opts.banner = "Usage: ./filtax.rb [options]"
 opts.array '-a', '--address', 'Wallet or miner address'
+opts.integer '-d', '--day', 'Number of recent days to skip due to slow processing of Filfox', default: 14
 opts.on '-h', '--help', 'print help' do
   puts opts
   exit
 end
 parser = Slop::Parser.new(opts)
 begin
-  options = parser.parse(ARGV)
+  @options = parser.parse(ARGV)
 rescue
   puts opts
   exit
 end
+@day = @options[:day]
 
-exchanges = ["f13sb4pa34qzf35txnan4fqjfkwwqgldz6ekh5trq"]
-
-def get_type(address)
-  if File.exists?("cache.json")
-    cache = JSON.parse(File.read("cache.json"))
-  else 
-    cache = {}
+def get_price
+  URI.open('https://www.coingecko.com/price_charts/export/12817/usd.csv', 'rb') do |url|
+    url.read
   end
-  if cache.has_key? address
-    return cache[address]
-  end
-
-  puts "Querying #{address}"
-  doc = Nokogiri::HTML(URI.open("https://filfox.info/en/address/#{address}"))
-  if doc.css('.mr-4').any?{|c| c.content.include? "Payment Channel"}
-    result = 'payment'
-    cache[address] = result
-  elsif doc.css('.mt-4').any?{|c| c.content.include? "Adjusted Power"}
-    result = 'miner'
-    cache[address] = result
-  elsif doc.css('.mr-4').any?{|c| c.content.include? "Account"}
-    result = 'account'
-    cache[address] = result
-  end
-
-  File.write("cache.json", JSON.generate(cache))
-  return result
 end
 
-def get_messages(address, type)
-  if File.exists?("#{address}.#{type}.json")
-    result = JSON.parse(File.read("#{address}.#{type}.json"))
+def get_transactions(address)
+  if File.exists?("#{address}.json")
+    result = JSON.parse(File.read("#{address}.json"))
   else 
     result = {}
   end
 
-  initial_size = result.size
-
-  puts "Retrieving #{type} for address #{address}"
+  puts "Retrieving address #{address}"
   page = 0
   loop do
+    added = 0
     break_outer = false
     puts "  Page #{page}"
-    # The pagination should be relatively reliable. Even if the chain is updated during the retrieval, it should not cause data missing or duplication
-    response = JSON.parse(RestClient.get("https://filfox.info/api/v1/address/#{address}/#{type}?pageSize=100&page=#{page}").body)
-    break if response[type].nil? || response[type].length == 0
-    response[type].each do |transfer|
-      case type
-      when 'transfers'
-        # message_id + type seems to be unique globally
-        next if transfer['type'] == 'reward'
-        if transfer['message'].nil? && transfer['type'] == 'burn'
-          key = transfer['timestamp']
+    response = JSON.parse(RestClient.get("https://filfox.info/api/v1/address/#{address}/transfers?pageSize=100&page=#{page}").body)
+    # Stop if its beyond the last page
+    break if response['transfers'].nil? || response['transfers'].length == 0
+    response['transfers'].each do |transfer|
+      timestamp = transfer['timestamp']
+      from = transfer['from']
+      to = transfer['to']
+      value = transfer['value']
+      message = transfer['message']
+      type = transfer['type']
+      # Skip recent dates because it takes time for Filfox to generate accurate transaction list
+      next if Date.today - Time.at(timestamp).to_date < @day
+      result[timestamp.to_s] = [] unless result.has_key? timestamp.to_s
+      if result[timestamp.to_s].any? {|entry| entry['from'] == from && entry['to'] == to && entry['value'] == value && entry['message'] == message && entry['type'] == type }
+        # If there is duplicate
+        if added == 0
+          break_outer = true
+          break
         else
-          p transfer if transfer['message'].nil?
-          key = transfer['message'] + '-' + transfer['type']
+          next
         end
-        if result.has_key? key
-          break_outer = true
-          break
-        end
-        result[key] = [transfer['from'], transfer['to'], transfer['type'], transfer['value'].to_i, transfer['timestamp']]
-      when 'blocks'
-        key = transfer['cid']
-        if result.has_key? key
-          break_outer = true
-          break
-        end
-        result[key] = [transfer['reward'].to_i, transfer['timestamp']]
       end
+      result[timestamp.to_s] << {'from' => from, 'to' => to, 'value' => value, 'message' => message, 'type' => type}
+      added += 1
     end
     break if break_outer
     page += 1
   end
 
-  if result.size > initial_size
-    File.write("#{address}.#{type}.json", JSON.generate(result))
-  end
-
+  File.write("#{address}.json", JSON.generate(result))
   result
 end
 
-addresses = Set.new(options[:address])
+summary = {}
+exception = {}
 
-exceptions = []
-burn_fees = []
-miner_fees = []
-deal_fees = []
-exec_fees = []
-payments = []
-rewards = []
+prices = CSV.new(get_price, headers: true).map{|row| [Date.parse(row['snapped_at']).to_s, row['price'].to_f * 1e-18]}.to_h
+addresses = Set.new(@options[:address])
 addresses.each do |address|
-  get_messages(address, "transfers").values.each do |from, to, type, value, timestamp|
-    case type
-    when 'burn-fee','burn'
-      burn_fees.push([timestamp, -value])
-    when 'miner-fee'
-      miner_fees.push([timestamp, -value])
-    when 'transfer','send','receive'
-      if addresses.include?(from) && addresses.include?(to)
-        next
-      elsif to == 'f05'
-        deal_fees.push([timestamp, -value])
-      elsif to == 'f01'
-        exec_fees.push([timestamp, -value])
-      elsif type == 'send' && get_type(to) == 'payment'
-        payments.push([timestamp, -value])
+  get_transactions(address).each do |timestamp, entries|
+    entries.each do |entry|
+      time = Time.at(timestamp.to_i).to_datetime
+      key = "#{time.year}-#{time.month}"
+      next if addresses.include?(entry['from']) && addresses.include?(entry['to'])
+      summary[key] = [] unless summary.has_key? key
+      other = addresses.include?(entry['from']) ? entry['to'] : entry['from']
+      date_str = time.to_date.to_s < '2020-10-15' ? '2020-10-15' : time.to_date.to_s
+      case other
+      when 'f099'
+        summary[key].push([time.to_date.to_s, "Penalty or gas fee", entry['value'].to_i * prices[date_str]])
+      when 'f05'
+        summary[key].push([time.to_date.to_s, "Deal making and publishing", entry['value'].to_i * prices[date_str]])
+      when 'f01'
+        summary[key].push([time.to_date.to_s, "Deal execution", entry['value'].to_i * prices[date_str]])
+      when 'f02'
+        summary[key].push([time.to_date.to_s, "Block reward", entry['value'].to_i * prices[date_str]])
       else
-        exceptions.push([from, to, type, value, timestamp])
+        if entry['type'] == 'miner-fee'
+          summary[key].push([time.to_date.to_s, "Miner fee", entry['value'].to_i * prices[date_str]])
+        elsif other == entry['to'] && other.length < 10
+          summary[key].push([time.to_date.to_s, "Deal payment", entry['value'].to_i * prices[date_str]])
+        else
+          exception[key] = [] unless exception.has_key? key
+          exception[key].push([time.to_date.to_s, "#{entry['type']} with #{other} - #{entry['message']}", entry['value'].to_i * prices[date_str]])
+        end
       end
-    else
-      exceptions.push([from, to, type, value, timestamp])
     end
   end
-  get_messages(address, "blocks").values.each do |value, timestamp|
-    rewards.push([timestamp, value])
+end
+summary.each do |key, transactions|
+  CSV.open("#{key}.csv", "wb") do |csv|
+    csv << ['Date', 'Description', 'Amount']
+    transactions.each do |t|
+      csv << t
+    end
   end
 end
-
-puts "Summary"
-puts "  Burn Fees : %0.2f Fil" % [(burn_fees.reduce(0){|sum, x| sum += x[1]}/1000000000000000000.0).to_s]
-puts "  Miner Fees: %0.2f Fil" % [(miner_fees.reduce(0){|sum, x| sum += x[1]}/1000000000000000000.0).to_s]
-puts "  Deal Fees : %0.2f Fil" % [(deal_fees.reduce(0){|sum, x| sum += x[1]}/1000000000000000000.0).to_s]
-puts "  Exec Fees : %0.2f Fil" % [(exec_fees.reduce(0){|sum, x| sum += x[1]}/1000000000000000000.0).to_s]
-puts "  Payments  : %0.2f Fil" % [(payments.reduce(0){|sum, x| sum += x[1]}/1000000000000000000.0).to_s]
-puts "  Rewards   : %0.2f Fil" % [(rewards.reduce(0){|sum, x| sum += x[1]}/1000000000000000000.0).to_s]
-p exceptions
-p exceptions.map{|from, to, type, value, timestamp| [from, to]}.flatten.sort.uniq.reject{|x| addresses.include? x}
+exception.each do |key, transactions|
+  CSV.open("#{key}.exception.csv", "wb") do |csv|
+    csv << ['Date', 'Description', 'Amount']
+    transactions.each do |t|
+      csv << t
+    end
+  end
+end
