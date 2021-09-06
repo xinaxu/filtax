@@ -9,3 +9,5 @@ gem "slop"
 gem "json"
 gem "nokogiri"
 gem "open-uri"
+gem 'active_record'
+gem 'sqlite3'
