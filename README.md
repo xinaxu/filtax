@@ -1,7 +1,8 @@
 # filtax
 
 ## Disclaimer
-This is a tool used to figure out the earning and loss incurred on Filecoin network for list of wallets or miner addresses. It does not calculate the tax for you. For tax advise, consult with your tax professionals.
+This is a tool used to figure out the earning and loss incurred on Filecoin network for list of wallets or miner addresses. It generates transactions which can be imported by crypto tax software. It does not calculate the tax for you.
+The tool pulls data from filscan
 
 ## Usage
 ```
