@@ -37,7 +37,14 @@ ActiveRecord::Schema.define do
 
   add_index :messages, :cid, unique: true
   add_index :blocks, :cid, unique: true
-  add_index :transfers, :height, unique: true
+  add_index :messages, :height
+  add_index :blocks, :height
+  add_index :transfers, :height
+  add_index :messages, :from
+  add_index :messages, :to
+  add_index :blocks, :miner
+  add_index :transfers, :from
+  add_index :transfers, :to
 end
 
 class Message < ActiveRecord::Base
