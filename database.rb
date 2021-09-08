@@ -31,8 +31,13 @@ ActiveRecord::Schema.define do
     table.string :message_cid
     table.string :from
     table.string :to
-    table.string :type
+    table.string :transfer_type
     table.string :value
+  end
+
+  create_table :updates, if_not_exists: true do |table|
+    table.string :address
+    table.integer :height
   end
 
   add_index :messages, :cid, unique: true
@@ -45,6 +50,7 @@ ActiveRecord::Schema.define do
   add_index :blocks, :miner
   add_index :transfers, :from
   add_index :transfers, :to
+  add_index :updates, :address, unique: true
 end
 
 class Message < ActiveRecord::Base
@@ -52,4 +58,6 @@ end
 class Block < ActiveRecord::Base
 end
 class Transfer < ActiveRecord::Base
+end
+class Update < ActiveRecord::Base
 end

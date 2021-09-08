@@ -9,7 +9,8 @@ opts = Slop::Options.new
 opts.banner = "Usage: ./filtax.rb [options]"
 opts.array '-a', '--address', 'Wallet or miner addresses'
 opts.string '-f', '--file', 'A file listing all addresses on each line'
-opts.string '-o', '--output-prefix', 'The prefix of the output file, by default "output"'
+opts.string '-o', '--output-prefix', 'The prefix of the output file, by default "output"', default: "output"
+opts.bool '-s', '--skip-retrieval', 'Skip retrieval and just do the calculation', default: false
 opts.on '-h', '--help', 'print help' do
   puts opts
   exit
@@ -46,24 +47,29 @@ def update_address(address)
     ).find_or_create_by(cid: message['cid'])
   end
 =end
-  max_height = Transfer.where(['"from" = ? or "to" = ?', address, address]).maximum(:height) || 0
-  FilFox.get_transfers(address, max_height) do |message|
+  last_update = Update.find_by(address: address)
+  max_height = last_update.nil? ? 0 : last_update.height - 2880
+  FilFox.get_transfers(address, max_height).reverse.each do |message|
     next unless [message['from'], message['to']].include? address
     Transfer.create_with(
       height: message['height'],
       message_cid: message['message'],
       from: message['from'],
       to: message['to'],
-      type: message['type'],
+      transfer_type: message['type'],
       value: message['value']
     ).find_or_create_by(
       height: message['height'],
       from: message['from'],
       to: message['to'],
-      type: message['type'],
+      transfer_type: message['type'],
       value: message['value']
     )
+    max_height = [max_height, message['height']].max
   end
+  update = Update.where(address: address).first_or_initialize
+  update.height = max_height
+  update.save
 end
 
 addresses = []
@@ -80,30 +86,30 @@ addresses.each do |address|
   puts "  #{address}"
 end
 
-puts "== Updating Addresses =="
-addresses.each do |address|
-  update_address(address)
+unless @options['skip-retrieval']
+  puts "== Updating Addresses =="
+  addresses.each do |address|
+    update_address(address)
+  end
 end
 
-prefix = @options[:output_prefix] || 'output'
+prefix = @options['output-prefix']
 incoming = CSV.open("#{prefix}.incoming.csv", "wb")
+incoming << ["Coin Symbol", "Amount", "Timestamp", "Incoming Type"]
 outgoing = CSV.open("#{prefix}.outgoing.csv", "wb")
+outgoing << ["Coin Symbol", "Amount", "Timestamp", "Outgoing Type"]
 
 Transfer.where(['"from" in (?) or "to" in (?)', addresses, addresses]).each do |transfer|
-  from, to, type, value = transfer['from'], transfer['to'], transfer['type'], transfer['value'].to_i
+  from, to, type, value, height, cid = transfer.from, transfer.to, transfer.transfer_type, transfer.value.to_i, transfer.height, transfer.message_cid
   # Skip internal transfer
   next if addresses.include?(from) && addresses.include?(to)
-  if addresses.include? to
-    csv = incoming
-    csv << ["Coin Symbol", "Amount", "Timestamp", "Incoming Type"]
-  else
-    csv = outgoing
-    csv << ["Coin Symbol", "Amount", "Timestamp", "Outgoing Type"]
-  end
+  csv = value > 0 ? incoming : outgoing
 
   case type
   when 'receive'
     type = 'Income'
+  when 'send'
+    type = 'Payment'
   when 'burn', 'burn-fee', 'miner-fee'
     type = 'Network Fee'
   when 'reward'
@@ -113,4 +119,6 @@ Transfer.where(['"from" in (?) or "to" in (?)', addresses, addresses]).each do |
     p transfer
     exit
   end
+
+  csv << ["FIL", value.abs / 1e18, Time.at(height_to_unix(height)).utc.to_s[0..-5], type, "#{from} -> #{to}, #{cid}"]
 end

@@ -19,7 +19,15 @@ class FilFox
     result = []
     page = 0
     loop do 
-      response = RestClient.get("https://filfox.info/api/v1/address/#{address}/#{type}?pageSize=#{PAGINATION}&page=#{page}")
+      response = nil
+      loop do
+        response = RestClient.get("https://filfox.info/api/v1/address/#{address}/#{type}?pageSize=#{PAGINATION}&page=#{page}")
+        break
+      rescue SocketError
+        puts "Wait for 10 secs before retry fetching"
+        sleep 10
+        next
+      end
       response = JSON.parse(response.body)
       result << response[type]
       page += 1
